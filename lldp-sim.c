@@ -163,19 +163,20 @@ trUpdate(node_t *n, port_t *p, tr_tlv_t *tr)
 }
 
 void
-somethingChangedRemote(node_t *n, port_t *p, tr_tlv_t *tr)
+somethingChangedRemote(node_t *n, port_t *p, peer_t *x, tr_tlv_t *tr)
 {
 #ifdef DEBUG_OUTPUT
     printf("somethingChangedRemote(): n=%d, p=%d ", n->id, p->id);
 
-    printf("t: %d=>%d ", p->last_peer_node_type, tr->node_type); 
-    printf("l: %d=>%d ", p->last_peer_level, tr->level);
-    printf("a: %d=>%d\n", p->last_peer_pattr, tr->pattr);
+    printf("t: %d=>%d ", x->last_peer_node_type, tr->node_type); 
+    printf("l: %d=>%d ", x->last_peer_level, tr->level);
+    printf("a: %d=>%d\n", x->last_peer_pattr, tr->pattr);
 #endif
+    last_changed_ev = ev_timenow();
 
-    p->last_peer_node_type = tr->node_type;
-    p->last_peer_level = tr->level;
-    p->last_peer_pattr = tr->pattr;
+    x->last_peer_node_type = tr->node_type;
+    x->last_peer_level = tr->level;
+    x->last_peer_pattr = tr->pattr;
 
     trUpdate(n, p, tr);
 }
@@ -196,6 +197,7 @@ somethingChangedLocal(node_t *n, port_t *p)
     printf("l: %d=>%d ", n->my_last_level, n->level);
     printf("a: %d=>%d\n", p->my_last_pattr, p->pattr);
 #endif
+    last_changed_ev = ev_timenow();
 
     n->my_last_node_type = n->node_type;
     n->my_last_level = n->level;
@@ -216,6 +218,7 @@ somethingChangedLocal(node_t *n, port_t *p)
         else
             delay = LLDP_MSG_INTERVAL;
     }
+    delay += rand() % jitter;
 
     // Update the event and re-use
 
@@ -261,6 +264,7 @@ do_lldp_tx(event_t *ev)
     event_t *ev_rx;
     port_t  *p, *p_peer;
     node_t  *n, *n_peer;
+    link_t  *l;
     int     delay;
 
     p = ev->ev_port;
@@ -270,37 +274,45 @@ do_lldp_tx(event_t *ev)
         exit(1);
     }
 
-    p_peer = p->peer;
-    if (p_peer)
-        n_peer = p_peer->node;
-    else {
-        printf("Bad peer pointer\n");
+    l = p->link;
+    if (!l) {
+        printf("No Link\n");
         exit(1);
     }
-
+    
     if ((!p->status) || (!n->status)) {
         printf("%d: unable to tx\n", ev_timenow());
         return;
     }
 
+    p_peer = l->peer_list;
+    while (p_peer) {
+
+        if (p_peer != p) {
+            n_peer = p_peer->node;
+
 #ifdef DEBUG_OUTPUT
-    printf("%d: TX n=%d->%d, p=%d, t=%d, l=%d, a=%d\n", ev_timenow(), 
-            n->id, n_peer->id, p->id, n->node_type, n->level, p->pattr);
+            printf("%d: TX n=%d->%d, p=%d(%d), t=%d, l=%d, a=%d\n", ev_timenow(), 
+                    n->id, n_peer->id, p->id, p->status, n->node_type, n->level, p->pattr);
 #endif
 
-    ev_rx = alloc_ev();
-    ev_rx->ev_type = EV_LLDP_RX;
-    ev_rx->ev_time = ev_timenow();
-    ev_rx->ev_owner = n_peer;
-    ev_rx->ev_port = p_peer;
+            ev_rx = alloc_ev();
+            ev_rx->ev_type = EV_LLDP_RX;
+            ev_rx->ev_time = ev_timenow();
+            ev_rx->ev_owner = n_peer;
+            ev_rx->ev_port = p_peer;
 
-    ev_rx->u.tr.p_peer = p;
-    ev_rx->u.tr.n_peer = n;
-    ev_rx->u.tr.node_type = n->node_type;
-    ev_rx->u.tr.level = n->level;
-    ev_rx->u.tr.pattr = p->pattr;
+            ev_rx->u.tr.p_peer = p;
+            ev_rx->u.tr.n_peer = n;
+            ev_rx->u.tr.node_type = n->node_type;
+            ev_rx->u.tr.level = n->level;
+            ev_rx->u.tr.pattr = p->pattr;
 
-    ev_insert(ev_rx);
+            ev_insert(ev_rx);
+        }
+
+        p_peer = p_peer->next;
+    }
 
     --p->tx_credit;
     p->last_tx_time = ev_timenow();
@@ -310,6 +322,7 @@ do_lldp_tx(event_t *ev)
         delay = 1;
     } else
         delay = LLDP_MSG_INTERVAL;
+    delay += rand() % jitter;
 
     lldp_xmit(n, p, delay, NULL);
 }
@@ -319,6 +332,7 @@ do_lldp_rx(event_t *ev)
 {
     node_t  *n, *n_peer;
     port_t  *p, *p_peer;
+    peer_t  *x;
 
     n = ev->ev_owner;
     p = ev->ev_port;
@@ -332,14 +346,33 @@ do_lldp_rx(event_t *ev)
     }
 
 #ifdef DEBUG_OUTPUT
-    printf("%d: RX n=%d<-%d, p=%d, t=%d, l=%d, a=%d\n", ev_timenow(), 
-            n->id, n_peer->id, p->id, 
+    printf("%d: RX n=%d<-%d, p=%d(%d), t=%d, l=%d, a=%d\n", ev_timenow(), 
+            n->id, n_peer->id, p->id, p->status,
             ev->u.tr.node_type, ev->u.tr.level, ev->u.tr.pattr);
 #endif
 
-    if ((p->last_peer_node_type != ev->u.tr.node_type) ||
-        (p->last_peer_level != ev->u.tr.level) ||
-        (p->last_peer_pattr != ev->u.tr.pattr) ) 
-            somethingChangedRemote(n, p, &ev->u.tr);
+    /* ignore events if port status is down */
+    if (p->status == 0)
+        return;
+
+    /* get peer's last know attributes */
+    x = p->peers;
+    while(x) {
+        if (x->id == n_peer->id) {
+            break;
+        }
+        x = x->next;
+    }
+    if (!x) {
+        x = calloc(1, sizeof(peer_t));
+        x->id = n_peer->id;
+        x->next = p->peers;
+        p->peers = x;
+    }
+
+    if ((x->last_peer_node_type != ev->u.tr.node_type) ||
+        (x->last_peer_level != ev->u.tr.level) ||
+        (x->last_peer_pattr != ev->u.tr.pattr) ) 
+            somethingChangedRemote(n, p, x, &ev->u.tr);
 }
 

@@ -30,7 +30,7 @@ extern void lldp_xmit(node_t *n, port_t *p, int delay, event_t *o_ev);
 extern void do_lldp_tx(event_t *ev);
 extern void do_lldp_rx(event_t *ev);
 
-extern void somethingChangedRemote(node_t *n, port_t *p, tr_tlv_t *tr);
+extern void somethingChangedRemote(node_t *n, port_t *p, peer_t *x, tr_tlv_t *tr);
 extern void somethingChangedLocal(node_t *n, port_t *p);
 
 #endif

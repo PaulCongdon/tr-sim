@@ -43,17 +43,25 @@ int
 add_link(node_t *s, node_t *d)
 {
     port_t      *s_port, *d_port = NULL;
+    link_t      *link = NULL;
 
-    if ((s->port_ct >= MAX_BRIDGE_PORTS) || (s->port_ct >= MAX_BRIDGE_PORTS)) {
+    if (s->port_ct >= MAX_BRIDGE_PORTS) {
         printf("Max ports reached, unsupported topology\n");
         return -1;
     }
 
+    link = calloc(1, sizeof(link_t));
+
     s_port = &s->ports[s->port_ct];
     d_port = &d->ports[d->port_ct];
 
-    s_port->peer = d_port;
-    d_port->peer = s_port;
+    s_port->link = link;
+    d_port->link = link;
+
+    s_port->next = d_port;
+    d_port->next = NULL;
+    link->peer_list = s_port;
+    link->peer_ct = 2;
 
     s_port->id = ++s->port_ct;
     d_port->id = ++d->port_ct;
@@ -142,13 +150,96 @@ make_connections(json_t *js_obj, node_t *n)
 }
 
 int
+add_shared_links(void)
+{
+    int i, rn, rp, ct;
+    node_t *n, *r_node;
+    link_t *r_link;
+    port_t *r_port;
+    int skip = 0;
+
+    if (shared_links <= 0)
+        return 0;
+
+    if (shared_links >= MAX_BRIDGE_PORTS) {
+        printf("Too many shared links\n");
+        exit(1);
+    }
+
+    /* Build a bridge node to use for shared links */
+
+    n = calloc(1, sizeof(node_t));
+    if (!n) {
+        printf("Calloc error\n");
+        exit(1);
+    }
+    ++num_nodes;
+    n->id = num_nodes;
+    n->node_type = N_BRIDGE;
+    n->level = -1;
+    n->port_ct = shared_links;
+    n->next = nodes;
+    nodes = n;
+
+    for (i=0; i<shared_links; ++i) {
+        port_t *p = &n->ports[i];
+        p->id = i+1;
+        p->node = n;
+        p->pattr = P_UNKNOWN;
+
+        ct = 0;
+        do {
+            ++ct;
+
+            /* get a random node, but not the new one */
+            rn = rand() % num_nodes;
+            r_node = get_node(nodes, rn);
+            if (!r_node) {
+                printf("Can't find node id %d\n", rn);
+                exit(1);
+            }
+
+            /* get a random shared link */
+            rp = rand() % r_node->port_ct;
+            r_port = &r_node->ports[rp];
+            r_link = (link_t *)r_port->link;
+
+            /* Make sure this port isn't already on the shared link */
+            r_port = r_link->peer_list;
+            skip = 0;
+            while(r_port) {
+                if (r_port == p) {
+                    skip = 1;
+                    break;
+                } else
+                    r_port  = r_port->next;
+            }
+
+        } while ((skip) && (ct < 2*num_nodes));
+         
+        if (skip) {
+            printf("Can't find a shared link to use\n");
+            exit(1);
+        }
+
+        /* Add this port to the shared link */
+        p->link = r_link;
+        p->next = r_link->peer_list;
+        r_link->peer_list = p;
+        ++r_link->peer_ct;
+    }
+
+
+}
+
+int
 get_nodes(json_t *js_obj, node_t **n)
 {
 	json_t	*js_array;
 	json_t	*js_node, *js_node_type, *js_node_id;
 	char node_type[8]; 
 	char node_id[12]; 
-	int i, num_nodes = 0;
+	int i;
 	int err = -1;
 
 	do {
@@ -218,8 +309,9 @@ get_nodes(json_t *js_obj, node_t **n)
 void
 dump_nodes(node_t *n)
 {
-    node_t *nn, *peer_n;
+    node_t *nn, *p_node;
     port_t *p;
+    link_t *l;
     int i;
 
     printf("\n");
@@ -229,9 +321,19 @@ dump_nodes(node_t *n)
                 nn->id, nn->level, nn->port_ct);
         for (i=0; i<nn->port_ct; ++i) {
             p = &nn->ports[i];
-            if (i==0) printf("\n  ");
-            peer_n = (node_t *)p->peer->node;
-            printf("p%d,%d(->n%d) ", i+1, p->pattr, peer_n->id);
+            l = (link_t *)p->link;
+            if (i==0) printf("\n");
+            if (!l) {
+                printf("No link\n");
+                return;
+            }
+            p = l->peer_list;
+            while(p) {
+                p_node = (node_t *)p->node;
+                printf("  n%d-p%d,%d ", p_node->id, p->id, p->pattr);
+                p = p->next;
+            }
+            printf("\n");
         }
         printf("\n\n");
         nn = nn->next;
@@ -244,6 +346,7 @@ system_start(node_t *n)
     node_t  *n_peer;
     port_t  *p_peer;
     port_t  *p;
+    link_t  *p_link;
     int     i;
 
 #ifdef DEBUG_OUTPUT
@@ -255,30 +358,10 @@ system_start(node_t *n)
 
     for (i=0; i<n->port_ct; ++i) {
         p = &n->ports[i];
-        p_peer = p->peer;
-        if (p_peer) 
-            n_peer = p_peer->node;
-        else {
-            printf("Inconsistent ports\n");
-            exit(1);
-        }
-
-/*
-        printf("%d: Link check (n=%d p=%d s=%d)-(n_peer=%d p_peer=%d s_peer=%d)\n", 
-                ev_timenow(), n->id, p->id, n->status, n_peer->id, p_peer->id, n_peer->status);
-*/
-
-        // Both systems are up, so the link is up, start LLDP
-        if (n_peer->status) {
-            p->status = 1;
-            p->tx_fast = LLDP_MAX_FAST;
-            p->tx_credit = LLDP_MAX_TX_CREDIT;
-            p_peer->status = 1;
-            p_peer->tx_fast = LLDP_MAX_FAST;
-            p_peer->tx_credit = LLDP_MAX_TX_CREDIT;
-            lldp_xmit(n, p, rand() % 2, NULL);
-            lldp_xmit(n_peer, p_peer, rand() % 2, NULL);
-        }
+        p->status = 1;
+        p->tx_fast = LLDP_MAX_FAST;
+        p->tx_credit = LLDP_MAX_TX_CREDIT;
+        lldp_xmit(n, p, rand() % jitter, NULL);
     }
 }
 
@@ -308,16 +391,23 @@ usage(const char *cmd)
     fprintf(stderr, "  %s -d num     ==> set start-up delay max (random 0 to num)\n", cmd);
     fprintf(stderr, "  %s -f file    ==> topology configuratio file\n", cmd);
     fprintf(stderr, "  %s -h         ==> show help\n", cmd);
+    fprintf(stderr, "  %s -j num     ==> set the random jitter on transmit\n", cmd);
     fprintf(stderr, "  %s -m num     ==> maximum simulation time in ticks\n", cmd);
+    fprintf(stderr, "  %s -s num     ==> number of shared links\n", cmd);
 
     exit(1);
 }
 
-const char *optlist = "a:d:f:hm:";
+const char *optlist = "a:d:f:hj:m:s:";
 
 int algorithm = 0;
 int maxsim = MAX_SIM_TIME;
 int start_delay = SIM_START_DELAY;
+int jitter = SIM_DEFAULT_JITTER;
+int last_changed_ev = 0;
+int shared_links = 0;
+int num_nodes = 0;
+node_t *nodes = NULL;
 
 int 
 main(int argc, char *argv[])
@@ -326,7 +416,6 @@ main(int argc, char *argv[])
 	json_error_t	js_error;
 	char			*rec;
     char            *cmd = *argv;
-	node_t		    *nodes = NULL;
     event_t         *ev = NULL;
     int             opt;
 
@@ -349,8 +438,14 @@ main(int argc, char *argv[])
             case 'h':
                 usage(cmd);    // this will exit
                 break;
+            case 'j':
+                jitter = atoi(optarg);
+                break;
             case 'm':
                 maxsim = atoi(optarg);
+                break;
+            case 's':
+                shared_links = atoi(optarg);
                 break;
             default:
                 printf("Invalid option '%c', terminating\n", opt);
@@ -364,6 +459,7 @@ main(int argc, char *argv[])
     printf("  algorithm = %d\n", algorithm);
     printf("  maxsim = %d\n", maxsim);
     printf("  start delay = %d\n", start_delay);
+    printf("  shared links = %d\n", shared_links);
     printf("\n");
 #endif
 
@@ -385,6 +481,11 @@ main(int argc, char *argv[])
 	}
 
 	json_decref(js_obj);
+
+    if (add_shared_links() < 0) {
+		printf("error adding shared links\n");
+		return 0;
+	}
 
     printf("Before run\n");
 	dump_nodes(nodes);
@@ -422,6 +523,7 @@ main(int argc, char *argv[])
 
         if (ev_timenow() > maxsim) {
             printf("\nAfter Run\n");
+            printf("\nLast Something Changed Event: %d\n", last_changed_ev);
             dump_nodes(nodes);
             exit(1);
         }

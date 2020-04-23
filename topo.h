@@ -27,24 +27,39 @@
 
 #define MAX_BRIDGE_PORTS	48
 
-#define MAX_SIM_TIME        100
+#define MAX_SIM_TIME        1000
 #define SIM_START_DELAY     10
+#define SIM_DEFAULT_JITTER  2
+
+typedef struct peer {
+    struct peer *next;
+    int         id;
+    int         last_peer_node_type;
+    int         last_peer_level;
+    int         last_peer_pattr;
+} peer_t;
 
 typedef struct port {
     int 		id;
     void        *node;
-    struct port	*peer;
+    struct port	*next;
+    void        *link;
     int		    pattr;
     int         status;         // down = 0, up = 1
     int         last_tx_time;
     int         tx_credit;
     int         tx_fast;
-    int         last_peer_node_type;
-    int         last_peer_level;
-    int         last_peer_pattr;
+    peer_t      *peers;
     int         my_last_pattr;
     void        *next_ev;
 } port_t;
+
+typedef struct link {
+    int         id;
+    struct port *peer_list;
+    int         peer_ct;
+    int         status;
+} link_t;
 
 typedef struct node {
     struct node *next;
@@ -64,5 +79,12 @@ typedef struct node {
 extern int algorithm;
 extern int maxsim;
 extern int start_delay;
+extern int jitter;
+extern int last_changed_ev;
+extern int shared_links;
+extern int num_nodes;
+extern node_t *nodes;
+
+#define DEBUG_OUTPUT 1
 
 #endif
