@@ -152,13 +152,14 @@ make_connections(json_t *js_obj, node_t *n)
 int
 add_shared_links(void)
 {
-    int i, rn, rp, ct;
+    int i, j, rn, rp, ct;
     node_t *n, *r_node;
     link_t *r_link;
     port_t *r_port;
     int skip = 0;
+    int orig_num_nodes = num_nodes;
 
-    if (shared_links <= 0)
+    if ((shared_links <= 0) || (shared_bridges <= 0))
         return 0;
 
     if (shared_links >= MAX_BRIDGE_PORTS) {
@@ -166,70 +167,73 @@ add_shared_links(void)
         exit(1);
     }
 
-    /* Build a bridge node to use for shared links */
+    /* Build bridge nodes to use for shared links */
 
-    n = calloc(1, sizeof(node_t));
-    if (!n) {
-        printf("Calloc error\n");
-        exit(1);
-    }
-    ++num_nodes;
-    n->id = num_nodes;
-    n->node_type = N_BRIDGE;
-    n->level = -1;
-    n->port_ct = shared_links;
-    n->next = nodes;
-    nodes = n;
+    for (j=0; j<shared_bridges; ++j) {
 
-    for (i=0; i<shared_links; ++i) {
-        port_t *p = &n->ports[i];
-        p->id = i+1;
-        p->node = n;
-        p->pattr = P_UNKNOWN;
+        n = calloc(1, sizeof(node_t));
+        if (!n) {
+            printf("Calloc error\n");
+            exit(1);
+        }
+        ++num_nodes;
+        n->id = num_nodes;
+        n->node_type = N_BRIDGE;
+        n->level = -1;
+        n->my_last_node_type = N_BRIDGE;
+        n->my_last_level = -1;
+        n->port_ct = shared_links;
+        n->next = nodes;
+        nodes = n;
 
-        ct = 0;
-        do {
-            ++ct;
+        for (i=0; i<shared_links; ++i) {
+            port_t *p = &n->ports[i];
+            p->id = i+1;
+            p->node = n;
+            p->pattr = P_UNKNOWN;
 
-            /* get a random node, but not the new one */
-            rn = rand() % num_nodes;
-            r_node = get_node(nodes, rn);
-            if (!r_node) {
-                printf("Can't find node id %d\n", rn);
+            ct = 0;
+            do {
+                ++ct;
+
+                /* get a random node, but not the new one */
+                rn = (rand() % (orig_num_nodes-1)) + 1;
+                r_node = get_node(nodes, rn);
+                if (!r_node) {
+                    printf("Can't find node id %d\n", rn);
+                    exit(1);
+                }
+
+                /* get a random shared link */
+                rp = rand() % r_node->port_ct;
+                r_port = &r_node->ports[rp];
+                r_link = (link_t *)r_port->link;
+
+                /* Make sure this port isn't already on the shared link */
+                r_port = r_link->peer_list;
+                skip = 0;
+                while(r_port) {
+                    if (r_port == p) {
+                        skip = 1;
+                        break;
+                    } else
+                        r_port  = r_port->next;
+                }
+
+            } while ((skip) && (ct < 2*num_nodes));
+             
+            if (skip) {
+                printf("Can't find a shared link to use\n");
                 exit(1);
             }
 
-            /* get a random shared link */
-            rp = rand() % r_node->port_ct;
-            r_port = &r_node->ports[rp];
-            r_link = (link_t *)r_port->link;
-
-            /* Make sure this port isn't already on the shared link */
-            r_port = r_link->peer_list;
-            skip = 0;
-            while(r_port) {
-                if (r_port == p) {
-                    skip = 1;
-                    break;
-                } else
-                    r_port  = r_port->next;
-            }
-
-        } while ((skip) && (ct < 2*num_nodes));
-         
-        if (skip) {
-            printf("Can't find a shared link to use\n");
-            exit(1);
+            /* Add this port to the shared link */
+            p->link = r_link;
+            p->next = r_link->peer_list;
+            r_link->peer_list = p;
+            ++r_link->peer_ct;
         }
-
-        /* Add this port to the shared link */
-        p->link = r_link;
-        p->next = r_link->peer_list;
-        r_link->peer_list = p;
-        ++r_link->peer_ct;
     }
-
-
 }
 
 int
@@ -387,18 +391,20 @@ void
 usage(const char *cmd)
 {
     fprintf(stderr, "usage: %s\n", cmd);
-    fprintf(stderr, "  %s -a num     ==> set algorithm number (defaults to 0)\n", cmd);
-    fprintf(stderr, "  %s -d num     ==> set start-up delay max (random 0 to num)\n", cmd);
-    fprintf(stderr, "  %s -f file    ==> topology configuratio file\n", cmd);
-    fprintf(stderr, "  %s -h         ==> show help\n", cmd);
-    fprintf(stderr, "  %s -j num     ==> set the random jitter on transmit\n", cmd);
-    fprintf(stderr, "  %s -m num     ==> maximum simulation time in ticks\n", cmd);
-    fprintf(stderr, "  %s -s num     ==> number of shared links\n", cmd);
+    fprintf(stderr, "  %s -a num   ==> set algorithm number (defaults to 0)\n", cmd);
+    fprintf(stderr, "  %s -d num   ==> set start-up delay max (random 0 to num)\n", cmd);
+    fprintf(stderr, "  %s -f file  ==> topology configuratio file\n", cmd);
+    fprintf(stderr, "  %s -h       ==> show help\n", cmd);
+    fprintf(stderr, "  %s -j num   ==> set the random jitter on transmit\n", cmd);
+    fprintf(stderr, "  %s -m num   ==> maximum simulation time in ticks\n", cmd);
+    fprintf(stderr, "  %s -s num   ==> number of shared links\n", cmd);
+    fprintf(stderr, "  %s -S num   ==> number of shared devices with shared links (defaults to 1)\n", cmd);
+    fprintf(stderr, "  %s -x num   ==> set random generator seed\n", cmd);
 
     exit(1);
 }
 
-const char *optlist = "a:d:f:hj:m:s:";
+const char *optlist = "a:d:f:hj:m:s:S:x:";
 
 int algorithm = 0;
 int maxsim = MAX_SIM_TIME;
@@ -406,6 +412,7 @@ int start_delay = SIM_START_DELAY;
 int jitter = SIM_DEFAULT_JITTER;
 int last_changed_ev = 0;
 int shared_links = 0;
+int shared_bridges = 1;
 int num_nodes = 0;
 node_t *nodes = NULL;
 
@@ -446,6 +453,12 @@ main(int argc, char *argv[])
                 break;
             case 's':
                 shared_links = atoi(optarg);
+                break;
+            case 'S':
+                shared_bridges = atoi(optarg);
+                break;
+            case 'x':
+                srand(atoi(optarg));
                 break;
             default:
                 printf("Invalid option '%c', terminating\n", opt);

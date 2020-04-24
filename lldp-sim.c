@@ -366,6 +366,8 @@ do_lldp_rx(event_t *ev)
     if (!x) {
         x = calloc(1, sizeof(peer_t));
         x->id = n_peer->id;
+        x->last_peer_level = -1;
+        x->last_peer_pattr = P_UNKNOWN;
         x->next = p->peers;
         p->peers = x;
     }

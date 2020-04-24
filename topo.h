@@ -82,9 +82,10 @@ extern int start_delay;
 extern int jitter;
 extern int last_changed_ev;
 extern int shared_links;
+extern int shared_bridges;
 extern int num_nodes;
 extern node_t *nodes;
 
-#define DEBUG_OUTPUT 1
+//#define DEBUG_OUTPUT 1
 
 #endif
