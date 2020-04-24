@@ -209,11 +209,11 @@ add_shared_links(void)
                 r_port = &r_node->ports[rp];
                 r_link = (link_t *)r_port->link;
 
-                /* Make sure this port isn't already on the shared link */
+                /* Make sure this port or the node isn't already here */
                 r_port = r_link->peer_list;
                 skip = 0;
                 while(r_port) {
-                    if (r_port == p) {
+                    if ((r_port == p) || (r_port->node == n)) {
                         skip = 1;
                         break;
                     } else
